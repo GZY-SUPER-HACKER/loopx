@@ -83,10 +83,16 @@ def test_revocation_during_read_suppresses_result(monkeypatch, tmp_path):
         details, "list_goal_todos", lambda **_: {"ok": True, "todos": []}
     )
     tool, records = inspector(tmp_path, lambda: next(grants))
-    assert tool.read(TOOL_NAME, {"view": "todos", "goal_id": "alpha"}) == {
-        "ok": False,
-        "error": "authorization_changed",
-    }
+    rejected = tool.read(TOOL_NAME, {"view": "todos", "goal_id": "alpha"})
+    assert rejected["ok"] is False
+    assert rejected["code"] == "authorization_changed"
+    failure = rejected["read_failure"]
+    assert failure["schema_version"] == "manager_read_failure_v0"
+    assert failure["code"] == "authorization_changed"
+    assert failure["source_id"] == "local"
+    assert "never as no progress" in failure["coverage_effect"]
+    assert failure["next_action"].startswith("re-establish the manager scope")
+    assert "authorization_changed" in rejected["error"]
     assert not records
 
 

@@ -62,8 +62,11 @@ def test_project_evidence_scopes_before_reads_and_rejects_remote_and_other_goal(
     result = reader.read(CONTEXT_TOOL_NAME, {"view": "todos", "goal_id": "research"})
     assert result["ok"] and "Verify corrected source" in json.dumps(result)
     assert reader.read(CONTEXT_TOOL_NAME, {"view": "todos", "goal_id": "other"})["ok"] is False
-    assert reader.read(CONTEXT_TOOL_NAME, {"view": "sources", "source_id": "ssh:other"}) == {
-        "ok": False, "error": "source_outside_available_scope"}
+    rejected = reader.read(CONTEXT_TOOL_NAME, {"view": "sources", "source_id": "ssh:other"})
+    assert rejected["ok"] is False
+    assert rejected["code"] == "source_outside_available_scope"
+    assert rejected["read_failure"]["source_id"] == "ssh:other"
+    assert "never as no progress" in rejected["read_failure"]["coverage_effect"]
 
 
 def test_project_chat_nested_cli_handoff_returns_once_after_restart(project, monkeypatch):

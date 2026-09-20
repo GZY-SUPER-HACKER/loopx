@@ -132,10 +132,10 @@ def test_external_query_is_exact_audience_not_just_goal(fixture):
     assert turn["message"] not in json.dumps(rows)
     assert tool().read(TOOL_NAME, {"view": "handoffs", "request_id": web})["rows"] == []
     revoked = iter([True, False])
-    assert (
-        tool(lambda: next(revoked)).read(TOOL_NAME, {"view": "handoffs"})["error"]
-        == "authorization_changed"
-    )
+    revoked_read = tool(lambda: next(revoked)).read(TOOL_NAME, {"view": "handoffs"})
+    assert revoked_read["code"] == "authorization_changed"
+    assert revoked_read["read_failure"]["code"] == "authorization_changed"
+    assert "never as no progress" in revoked_read["read_failure"]["coverage_effect"]
     # Legacy same-source provenance still resolves; changing audience is not inferred.
     path = (
         _root(root)

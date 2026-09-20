@@ -885,6 +885,12 @@ def test_external_authority_is_rechecked_after_collection(monkeypatch, tmp_path)
     )
     assert result["goals"] == []
     assert result["warnings"] == ["external_authorization_changed"]
+    failure = result["context_failure"]
+    assert failure["schema_version"] == "manager_context_failure_v0"
+    assert failure["code"] == "external_authorization_changed"
+    assert failure["source_id"] == "manager_context"
+    assert "no progress" in failure["coverage_effect"]
+    assert failure["next_action"].startswith("name this reason in the answer")
 
 
 def test_empty_external_authority_never_reaches_the_model(monkeypatch, tmp_path):

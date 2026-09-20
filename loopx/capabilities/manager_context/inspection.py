@@ -12,6 +12,64 @@ from ...chat_manager_details import read_manager_goal_details
 from ...chat_manager_history import read_manager_delivery_history
 
 
+MANAGER_READ_FAILURE_SCHEMA_VERSION = "manager_read_failure_v0"
+
+# Every rejected manager read answers with one of these codes plus what the
+# rejection costs the answer and how to repair it. The bare code used to be the
+# whole payload, so the steward repeated "invalid_arguments" to the reader
+# instead of naming what was unread and what to send next.
+MANAGER_READ_FAILURE_REASONS: dict[str, tuple[str, str]] = {
+    "unsupported_read_tool": (
+        "no evidence was read because that tool is not the manager evidence read",
+        "call the manager evidence read tool with a supported view",
+    ),
+    "invalid_arguments": (
+        "no evidence was read because the arguments do not match the read contract",
+        "resend with a supported view (sources, portfolio, todos, deliveries or "
+        "handoffs), an optional goal_id, offset >= 0, 1 <= limit <= 12, and days "
+        "only for deliveries",
+    ),
+    "authorization_changed": (
+        "no evidence was read because this channel's authorization changed during the read",
+        "re-establish the manager scope for this channel, then repeat the read",
+    ),
+    "source_outside_available_scope": (
+        "no evidence was read because that source is outside this channel's scope",
+        "read a source this channel is authorized for, or ask the owner to widen the scope",
+    ),
+    "invalid_remote_read": (
+        "no evidence was read because that remote read form is not supported",
+        "use source_id ssh:<host> from view=sources with view portfolio (plus goal_id), "
+        "or with todos, deliveries or sources",
+    ),
+    "goal_outside_available_scope": (
+        "no evidence was read because that Goal is outside this channel's scope",
+        "read a Goal this channel is authorized for, or ask the owner to widen the scope",
+    ),
+    "handoff_query_unavailable_or_invalid": (
+        "handoff receipt status was not read because the query is unavailable or invalid",
+        "retry the handoff read with the recorded request_id, or report the handoff "
+        "receipt as unread rather than absent",
+    ),
+}
+
+
+def manager_read_failure_row(code: str, *, source_id: str = "local") -> dict[str, Any]:
+    """One rejected manager read as a typed row the answer can carry."""
+
+    coverage_effect, next_action = MANAGER_READ_FAILURE_REASONS[code]
+    return {
+        "schema_version": MANAGER_READ_FAILURE_SCHEMA_VERSION,
+        "code": code,
+        "source_id": source_id,
+        "coverage_effect": (
+            coverage_effect
+            + "; the answer must treat this as no evidence read, never as no progress"
+        ),
+        "next_action": next_action,
+    }
+
+
 TOOL_NAME = "loopx_manager_read"
 READ_TOOL = {
     "type": "function",
@@ -140,9 +198,21 @@ class ManagerInspection:
         from .ssh_evidence import sources
         return sources(self.runtime_root, self.channel_id, self.owner_scope, self.ssh_config_path)
 
+    @staticmethod
+    def _rejected(code: str, *, source_id: str = "local") -> dict[str, Any]:
+        """A refused read as typed evidence instead of a bare error code."""
+
+        failure = manager_read_failure_row(code, source_id=source_id)
+        return {
+            "ok": False,
+            "code": code,
+            "error": f"manager read rejected ({code}): {failure['next_action']}",
+            "read_failure": failure,
+        }
+
     def read(self, tool: str, arguments: Any) -> dict[str, Any]:
         if tool not in {TOOL_NAME, CONTEXT_TOOL_NAME} or not isinstance(arguments, dict):
-            return {"ok": False, "error": "unsupported_read_tool"}
+            return self._rejected("unsupported_read_tool")
         if set(arguments) - {
             "view",
             "goal_id",
@@ -153,7 +223,7 @@ class ManagerInspection:
             "source_id",
             "days",
         }:
-            return {"ok": False, "error": "invalid_arguments"}
+            return self._rejected("invalid_arguments")
         view, goal_id = arguments.get("view"), arguments.get("goal_id")
         offset, limit = arguments.get("offset", 0), arguments.get("limit", 8)
         include_stopped = arguments.get("include_stopped", False)
@@ -170,16 +240,16 @@ class ManagerInspection:
             or ("days" in arguments and (view != "deliveries" or type(arguments["days"]) is not int or not 1 <= arguments["days"] <= 90))
             or not isinstance(arguments.get("source_id", "local"), str)
         ):
-            return {"ok": False, "error": "invalid_arguments"}
+            return self._rejected("invalid_arguments")
         if not self.scope_valid():
-            return {"ok": False, "error": "authorization_changed"}
+            return self._rejected("authorization_changed")
         source_id = arguments.get("source_id", "local")
         if self.context.get("scope") == "owner_goal" and source_id != "local":
-            return {"ok": False, "error": "source_outside_available_scope"}
+            return self._rejected("source_outside_available_scope", source_id=source_id)
         if view == "sources":
             rows = self.sources()
             if not self.scope_valid():
-                return {"ok": False, "error": "authorization_changed"}
+                return self._rejected("authorization_changed")
             result = {"ok": True, "view": view, "rows": rows[offset:offset + limit],
                       "matched": len(rows), "next_offset": offset + limit if offset + limit < len(rows) else None,
                       "note": "Configured sources are not yet read. Select source_id for remote evidence; an empty local host_id does not imply missing remote Goals."}
@@ -187,7 +257,7 @@ class ManagerInspection:
             return result
         if source_id != "local":
             if not source_id.startswith("ssh:") or view == "handoffs" or (view != "portfolio" and not goal_id):
-                return {"ok": False, "error": "invalid_remote_read"}
+                return self._rejected("invalid_remote_read", source_id=source_id)
             from .ssh_evidence import read_remote
             result = read_remote(self.runtime_root, self.channel_id, self.owner_scope, arguments,
                                  self.scope_valid, config_path=self.ssh_config_path,
@@ -198,9 +268,9 @@ class ManagerInspection:
         if (goal_id is not None and goal_id not in goals) or (
             view not in {"portfolio", "handoffs"} and not goal_id
         ):
-            return {"ok": False, "error": "goal_outside_available_scope"}
+            return self._rejected("goal_outside_available_scope")
         if not self.scope_valid():
-            return {"ok": False, "error": "authorization_changed"}
+            return self._rejected("authorization_changed")
         if view == "portfolio":
             rows = list(goals.values()) if goal_id is None else [goals[goal_id]]
             if goal_id is None and not include_stopped:
@@ -227,7 +297,7 @@ class ManagerInspection:
                     limit=limit,
                 )
             except (OSError, ValueError, TypeError):
-                return {"ok": False, "error": "handoff_query_unavailable_or_invalid"}
+                return self._rejected("handoff_query_unavailable_or_invalid")
             page = source.pop("rows")
             matched = source.pop("matched")
         elif view == "todos":
@@ -262,7 +332,7 @@ class ManagerInspection:
             }
             page = [{**r, "todo_title": titles.get(r.get("todo_id"))} for r in page]
         if not self.scope_valid():
-            return {"ok": False, "error": "authorization_changed"}
+            return self._rejected("authorization_changed")
         # Trim whole rows, never malformed JSON or undisclosed byte truncation.
         while len(page) > 1 and len(json.dumps(page, ensure_ascii=False)) > 24000:
             page.pop()

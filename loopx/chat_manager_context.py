@@ -492,11 +492,32 @@ def manager_turn_context(
 def unavailable_manager_context(
     reason: str, *, evidence_window: dict[str, Any] | None = None
 ) -> dict[str, Any]:
+    """A turn without collected context, with the failure named as typed evidence.
+
+    ``warnings`` keeps the historical reason code for existing readers. The
+    typed row beside it names the source, what the missing context costs the
+    answer and what has to happen before the turn can answer from evidence,
+    because the bare code alone is what a steward repeats to the reader.
+    """
+
     return {
         "schema_version": "manager_turn_context_v1",
         "coverage": {"discovered": None, "verified": 0, "complete": False},
         "goals": [],
         "warnings": [reason],
+        "context_failure": {
+            "schema_version": "manager_context_failure_v0",
+            "code": reason,
+            "source_id": "manager_context",
+            "coverage_effect": (
+                "no manager evidence was collected for this turn; the answer must "
+                "not present the missing context as no progress"
+            ),
+            "next_action": (
+                "name this reason in the answer, do not answer from missing "
+                "evidence, and repeat the turn once the named condition clears"
+            ),
+        },
         **({"evidence_window": evidence_window} if evidence_window else {}),
     }
 
