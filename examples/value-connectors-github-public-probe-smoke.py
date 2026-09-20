@@ -12,6 +12,7 @@ import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError, URLError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,7 @@ if str(REPO_ROOT) not in sys.path:
 from loopx.capabilities.issue_fix.github_public import (  # noqa: E402
     GITHUB_PUBLIC_CHANNEL_PROBE_PACKET_SCHEMA_VERSION,
     GITHUB_PUBLIC_REPLY_MONITOR_PACKET_SCHEMA_VERSION,
+    github_public_read_failure_row,
 )
 from loopx.capabilities.value_connectors.install_check import (  # noqa: E402
     VALUE_CONNECTOR_INSTALL_CHECK_PACKET_SCHEMA_VERSION,
@@ -592,6 +594,30 @@ def main() -> int:
     assert "LoopX GitHub Public Reply Monitor" in reply_markdown, reply_markdown
     assert "recommended_action: `wait_no_bump`" in reply_markdown, reply_markdown
     assert_public_safe(reply_markdown)
+
+    # A failed public read must surface as a typed row instead of the provider's
+    # own text: steward answers used to quote "Cache miss" and
+    # "invalid_arguments" instead of naming what was unread and how to repair
+    # it. The provider message is replaced by its digest.
+    failure = github_public_read_failure_row(RuntimeError("gh request failed: Cache miss"))
+    assert failure["code"] == "provider_tool_unavailable", failure
+    assert failure["source_id"] == "github_public_channel", failure
+    assert "unread" in failure["coverage_effect"], failure
+    assert failure["next_action"], failure
+    assert failure["provider_message_digest"].startswith("sha256:"), failure
+    assert "Cache miss" not in json.dumps(failure), failure
+    assert_public_safe(failure)
+    assert github_public_read_failure_row(subprocess.TimeoutExpired("gh", 5))[
+        "code"
+    ] == "provider_timeout"
+    assert github_public_read_failure_row(
+        URLError("nodename nor servname provided")
+    )["code"] == "provider_network_unavailable"
+    http_failure = github_public_read_failure_row(
+        HTTPError("https://api.github.com/repos/o/r/issues/1", 403, "Forbidden", None, None)
+    )
+    assert http_failure["code"] == "provider_response_rejected", http_failure
+    assert http_failure["provider_status"] == 403, http_failure
 
     print("value-connectors-github-public-probe-smoke: ok")
     return 0
