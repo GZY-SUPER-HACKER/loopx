@@ -118,13 +118,19 @@ def project_replan_history(
         from .autonomous_replan_ack import autonomous_replan_ack_recorded
         ack_recorded = autonomous_replan_ack_recorded
     facts = [_run_fact(row, ack_recorded) for row in runs if isinstance(row, Mapping)]
+    scoped_agent_id = str(agent_id or "").strip() or None
+    if scoped_agent_id is not None:
+        # Match the TS historyWindow lane predicate before crossing the bounded
+        # Effect transport. Unattributed legacy rows still belong to this lane;
+        # a peer's ACK and history never influence its trigger selection.
+        facts = [row for row in facts if row["agent_id"] in (None, scoped_agent_id)]
     needs_resume = operation == "all" and any(
         row["monitor"]["mode"] == "blocked_successor_wait_without_material_transition"
         for row in facts)
     params = {
         "schema_version": "replan_history_request_v0", "operation": operation,
         "runs": facts,
-        "agent_id": str(agent_id or "").strip() or None,
+        "agent_id": scoped_agent_id,
         "monitor_agent_id": normalize_todo_claimed_by(agent_id),
         "neutral_classifications": sorted(REPLAN_HISTORY_NEUTRAL_CLASSIFICATIONS
             if neutral_classifications is None else neutral_classifications),

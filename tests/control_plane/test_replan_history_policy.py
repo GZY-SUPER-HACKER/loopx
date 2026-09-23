@@ -144,3 +144,40 @@ def test_codec_keeps_prose_out_of_the_history_decision_request(monkeypatch) -> N
     assert prose not in encoded
     assert len(encoded) < 5000
     assert requests[0][1]["todos"]["resume"] is None
+
+
+def test_codec_scopes_agent_lane_before_effect_transport(monkeypatch) -> None:
+    from loopx.control_plane.work_items import replan_history_codec as replan_history
+
+    requests = []
+    def capture(method, params):
+        requests.append(params)
+        return {"schema_version": "replan_history_result_v0", "trigger": None}
+    monkeypatch.setattr(replan_history, "effect_runtime_result", capture)
+    unattributed = run(3)
+    unattributed.pop("agent_id")
+    rows = [{**run(4, agent="peer"), "autonomous_replan_ack": {
+        "recorded": True, "semantic_delta": {"accepted": True}}},
+        unattributed, run(2), run(1, agent="peer")]
+
+    replan_history.project_replan_history(rows, agent_id=AGENT)
+    assert [row["agent_id"] for row in requests[-1]["runs"]] == [None, AGENT]
+    assert requests[-1]["agent_id"] == AGENT
+
+    # With no explicit lane, TS still infers the current agent from history.
+    replan_history.project_replan_history(rows)
+    assert len(requests[-1]["runs"]) == len(rows)
+
+
+def test_peer_heavy_goal_history_does_not_overflow_effect_transport() -> None:
+    from loopx.control_plane.work_items.replan_history_codec import project_replan_history
+
+    peer = run(0, agent="peer")
+    peer["progress_observation"] = observation()
+    rows = [peer.copy() for _ in range(5000)]
+    rows.extend(run(n, turn=f"turn-{n}") for n in range(20, 0, -1))
+
+    trigger = project_replan_history(rows, operation="periodic", agent_id=AGENT)
+    assert trigger is not None
+    assert trigger["kind"] == "periodic_review_due"
+    assert trigger["run_count"] == 20
